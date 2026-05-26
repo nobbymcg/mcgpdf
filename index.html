@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Lightweight PDF Reader</title>
+
+<style>
+  html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  body {
+    font-family: Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #toolbar {
+    padding: 10px;
+    background: #f0f0f0;
+    display: flex;
+    gap: 10px;
+    flex: 0 0 auto;
+  }
+
+  #viewer {
+    position: relative;
+    /* Scroll area for continuous paging. Fills remaining viewport height. */
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    background: #525659;
+    padding: 10px 0;
+  }
+
+  .page {
+    position: relative;
+    margin: 10px auto;
+    background: white;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  }
+
+  canvas {
+    display: block;
+  }
+
+  .textLayer {
+    position: absolute;
+    left: 0;
+    top: 0;
+    opacity: 0.25;
+    line-height: 1.0;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .textLayer > span {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+  }
+
+  .textLayer .highlight {
+    background-color: yellow;
+    border-radius: 2px;
+  }
+
+  /* Link layer: clickable rectangles overlaid on top of the page. */
+  .linkLayer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 2;
+    pointer-events: none;
+  }
+
+  .linkLayer a {
+    position: absolute;
+    display: block;
+    pointer-events: auto;
+    cursor: pointer;
+    background: rgba(255, 255, 0, 0.05);
+    text-decoration: none;
+  }
+
+  .linkLayer a:hover {
+    background: rgba(255, 255, 0, 0.25);
+    outline: 1px solid rgba(255, 200, 0, 0.7);
+  }
+</style>
+</head>
+
+<body>
+
+<div id="toolbar">
+  <input type="file" id="file-input">
+  <button onclick="prevPage()">Prev</button>
+  <button onclick="nextPage()">Next</button>
+  <button onclick="zoomIn()">Zoom +</button>
+  <button onclick="zoomOut()">Zoom -</button>
+  <input type="text" id="search-box" placeholder="Search...">
+  <button onclick="searchText()">Find Next</button>
+  <span id="page-info"></span>
+</div>
+
+<div id="viewer"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+let pdfDoc = null;
+let currentPage = 1;
+let scale = 1.5;
+let searchTerm = "";
+let searchStartPage = 1;
+
+// Per-page state: { pageDiv, canvas, textLayerDiv, linkLayerDiv,
+//                   rendered, rendering }
+let pageStates = [];
+let pageObserver = null;
+
+const viewer = document.getElementById('viewer');
+
+// Resolve a PDF "destination" (named string or explicit array) to a 1-based
+// page number in the current document.
+async function resolveDestinationToPage(dest) {
+  if (!pdfDoc || dest == null) return null;
+  let explicit = dest;
+  if (typeof dest === 'string') {
+    try {
+      explicit = await pdfDoc.getDestination(dest);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(explicit)) return null;
+  const ref = explicit[0];
+  try {
+    const pageIndex = await pdfDoc.getPageIndex(ref);
+    return pageIndex + 1;
+  } catch {
+    return null;
+  }
+}
+
+document.getElementById('file-input').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const fileReader = new FileReader();
+
+  fileReader.onload = function() {
+    loadPdfBytes(new Uint8Array(this.result));
+  };
+
+  fileReader.readAsArrayBuffer(file);
+});
+
+// Load PDF bytes (Uint8Array) into the viewer. Shared by the file-input path
+// and the Electron "open with" IPC path.
+function loadPdfBytes(typedarray) {
+  pdfjsLib.getDocument(typedarray).promise.then(pdf => {
+    pdfDoc = pdf;
+    currentPage = 1;
+    searchTerm = "";
+    buildAllPages();
+  }).catch(err => alert("Failed to open PDF: " + err.message));
+}
+
+// When running under Electron, the preload script exposes window.mcgpdf and
+// pushes the file bytes when the user opens a PDF via Explorer / Open With.
+if (window.mcgpdf && typeof window.mcgpdf.onOpenPdf === 'function') {
+  window.mcgpdf.onOpenPdf((bytes, name) => {
+    if (name) document.title = name + " — McGPDF";
+    loadPdfBytes(new Uint8Array(bytes));
+  });
+  if (typeof window.mcgpdf.onError === 'function') {
+    window.mcgpdf.onError(({ path, message }) => {
+      alert("Failed to open " + path + ":\n" + message);
+    });
+  }
+}
+
+document.getElementById('search-box').addEventListener('keydown', e => {
+  if (e.key === 'Enter') searchText();
+});
+
+// Track current page as the user scrolls.
+viewer.addEventListener('scroll', () => {
+  if (!pdfDoc) return;
+  const viewerTop = viewer.scrollTop;
+  // The "current" page is the one whose top is nearest to (but not past) the
+  // top of the viewport, with a small bias so a page is considered current
+  // once roughly a third of it is visible.
+  const bias = viewer.clientHeight * 0.33;
+  let best = 1;
+  for (let i = 0; i < pageStates.length; i++) {
+    const top = pageStates[i].pageDiv.offsetTop;
+    if (top - bias <= viewerTop) best = i + 1;
+    else break;
+  }
+  if (best !== currentPage) {
+    currentPage = best;
+    updatePageInfo();
+  }
+});
+
+function updatePageInfo() {
+  if (!pdfDoc) return;
+  document.getElementById("page-info").innerText =
+    `Page ${currentPage} / ${pdfDoc.numPages}`;
+}
+
+async function buildAllPages() {
+  // Tear down any prior observer / DOM.
+  if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
+  viewer.innerHTML = "";
+  pageStates = [];
+
+  // Create a placeholder pageDiv sized to the page's viewport for every
+  // page up front, so the scroll bar reflects total document height even
+  // before pages are rendered.
+  for (let i = 1; i <= pdfDoc.numPages; i++) {
+    const page = await pdfDoc.getPage(i);
+    const viewport = page.getViewport({ scale });
+
+    const pageDiv = document.createElement("div");
+    pageDiv.className = "page";
+    pageDiv.dataset.pageNumber = String(i);
+    pageDiv.style.width = viewport.width + "px";
+    pageDiv.style.height = viewport.height + "px";
+    viewer.appendChild(pageDiv);
+
+    pageStates.push({
+      pageDiv,
+      page,
+      viewport,
+      canvas: null,
+      textLayerDiv: null,
+      linkLayerDiv: null,
+      rendered: false,
+      rendering: false,
+    });
+  }
+
+  // Lazy-render pages as they enter the viewport (plus a buffer).
+  pageObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const num = Number(entry.target.dataset.pageNumber);
+      renderPageIfNeeded(num);
+    }
+  }, { root: viewer, rootMargin: "200px 0px" });
+
+  for (const state of pageStates) pageObserver.observe(state.pageDiv);
+
+  currentPage = 1;
+  updatePageInfo();
+}
+
+async function renderPageIfNeeded(num) {
+  const state = pageStates[num - 1];
+  if (!state || state.rendered || state.rendering) return;
+  state.rendering = true;
+
+  const { page, viewport, pageDiv } = state;
+
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  canvas.height = viewport.height;
+  canvas.width = viewport.width;
+
+  const textLayerDiv = document.createElement("div");
+  textLayerDiv.className = "textLayer";
+  textLayerDiv.style.height = viewport.height + "px";
+  textLayerDiv.style.width = viewport.width + "px";
+
+  const linkLayerDiv = document.createElement("div");
+  linkLayerDiv.className = "linkLayer";
+  linkLayerDiv.style.height = viewport.height + "px";
+  linkLayerDiv.style.width = viewport.width + "px";
+
+  pageDiv.appendChild(canvas);
+  pageDiv.appendChild(textLayerDiv);
+  pageDiv.appendChild(linkLayerDiv);
+
+  state.canvas = canvas;
+  state.textLayerDiv = textLayerDiv;
+  state.linkLayerDiv = linkLayerDiv;
+
+  await page.render({ canvasContext: context, viewport }).promise;
+
+  const textContent = await page.getTextContent();
+  await pdfjsLib.renderTextLayer({
+    textContent,
+    container: textLayerDiv,
+    viewport,
+    textDivs: []
+  }).promise;
+
+  if (searchTerm) highlightInTextLayer(textLayerDiv, searchTerm);
+
+  // Build clickable link rectangles from the page's annotations.
+  try {
+    const annotations = await page.getAnnotations();
+    buildLinkLayer(linkLayerDiv, annotations, viewport);
+  } catch (err) {
+    console.warn("Link layer build failed:", err);
+  }
+
+  state.rendered = true;
+  state.rendering = false;
+}
+
+function buildLinkLayer(container, annotations, viewport) {
+  for (const ann of annotations) {
+    if (ann.subtype !== "Link") continue;
+
+    // Convert annotation rect (PDF user space) to viewport pixel coords.
+    const [x1, y1, x2, y2] = pdfjsLib.Util.normalizeRect(
+      viewport.convertToViewportRectangle(ann.rect)
+    );
+
+    const a = document.createElement("a");
+    a.style.left = x1 + "px";
+    a.style.top = y1 + "px";
+    a.style.width = (x2 - x1) + "px";
+    a.style.height = (y2 - y1) + "px";
+
+    if (ann.url) {
+      // External URL.
+      a.href = ann.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer nofollow";
+      a.title = ann.url;
+    } else if (ann.dest != null) {
+      // Internal jump to another page in the same document.
+      a.href = "#";
+      a.title = "Go to page in document";
+      a.addEventListener("click", async (e) => {
+        e.preventDefault();
+        const pageNumber = await resolveDestinationToPage(ann.dest);
+        if (pageNumber) goToPage(pageNumber);
+      });
+    } else if (ann.action) {
+      // Named actions like "NextPage", "PrevPage", "FirstPage", "LastPage".
+      a.href = "#";
+      a.title = ann.action;
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        switch (ann.action) {
+          case "NextPage":  goToPage(currentPage + 1); break;
+          case "PrevPage":  goToPage(currentPage - 1); break;
+          case "FirstPage": goToPage(1); break;
+          case "LastPage":  goToPage(pdfDoc.numPages); break;
+        }
+      });
+    } else {
+      // Nothing actionable (e.g. file attachment) — skip.
+      continue;
+    }
+
+    container.appendChild(a);
+  }
+}
+
+function highlightInTextLayer(textLayerDiv, term) {
+  const lower = term.toLowerCase();
+  const spans = textLayerDiv.querySelectorAll("span");
+  spans.forEach(span => {
+    if (span.children.length > 0) return;
+    const text = span.textContent;
+    const idx = text.toLowerCase().indexOf(lower);
+    if (idx === -1) return;
+    const before = document.createTextNode(text.slice(0, idx));
+    const match = document.createElement("span");
+    match.className = "highlight";
+    match.textContent = text.slice(idx, idx + term.length);
+    const after = document.createTextNode(text.slice(idx + term.length));
+    span.textContent = "";
+    span.append(before, match, after);
+  });
+}
+
+function goToPage(num) {
+  if (!pdfDoc) return;
+  if (num < 1) num = 1;
+  if (num > pdfDoc.numPages) num = pdfDoc.numPages;
+  currentPage = num;
+  const state = pageStates[num - 1];
+  if (state) {
+    // Scroll the target page to the top of the viewer.
+    viewer.scrollTo({ top: state.pageDiv.offsetTop - 10, behavior: "smooth" });
+  }
+  updatePageInfo();
+}
+
+function prevPage() {
+  if (!pdfDoc) return;
+  goToPage(currentPage - 1);
+}
+
+function nextPage() {
+  if (!pdfDoc) return;
+  goToPage(currentPage + 1);
+}
+
+function zoomIn() {
+  if (!pdfDoc) return;
+  scale += 0.25;
+  rebuildAtCurrentPage();
+}
+
+function zoomOut() {
+  if (!pdfDoc) return;
+  scale -= 0.25;
+  if (scale < 0.5) scale = 0.5;
+  rebuildAtCurrentPage();
+}
+
+async function rebuildAtCurrentPage() {
+  const target = currentPage;
+  await buildAllPages();
+  goToPage(target);
+}
+
+async function searchText() {
+  if (!pdfDoc) { alert("Open a PDF first."); return; }
+
+  const term = document.getElementById("search-box").value.trim();
+  if (!term) return;
+
+  // If the term changed, restart from page 1 and re-highlight already-rendered
+  // pages. Otherwise continue searching after the current page (Find Next).
+  const termChanged = term.toLowerCase() !== searchTerm.toLowerCase();
+  if (termChanged) {
+    searchTerm = term;
+    searchStartPage = 1;
+    // Re-highlight any pages that were already rendered with the old term
+    // by clearing and re-rendering their text layers.
+    for (const state of pageStates) {
+      if (state.rendered && state.textLayerDiv) {
+        state.textLayerDiv.remove();
+        state.textLayerDiv = null;
+        state.canvas && state.canvas.remove();
+        state.canvas = null;
+        state.linkLayerDiv && state.linkLayerDiv.remove();
+        state.linkLayerDiv = null;
+        state.rendered = false;
+      }
+    }
+  } else {
+    searchStartPage = currentPage + 1;
+    if (searchStartPage > pdfDoc.numPages) searchStartPage = 1;
+  }
+
+  const lower = term.toLowerCase();
+  const total = pdfDoc.numPages;
+
+  for (let offset = 0; offset < total; offset++) {
+    const i = ((searchStartPage - 1 + offset) % total) + 1;
+    const page = await pdfDoc.getPage(i);
+    const textContent = await page.getTextContent();
+    const fullText = textContent.items.map(item => item.str).join(' ').toLowerCase();
+
+    if (fullText.includes(lower)) {
+      goToPage(i);
+      // Ensure the matched page renders (and gets highlighted) even if the
+      // IntersectionObserver hasn't fired yet after the programmatic scroll.
+      await renderPageIfNeeded(i);
+      return;
+    }
+  }
+
+  alert("Not found");
+}
+</script>
+
+</body>
+</html>

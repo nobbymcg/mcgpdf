@@ -9,7 +9,7 @@
 //     opening another PDF from Explorer swaps the document instead of
 //     spawning a new window)
 
-const { app, BrowserWindow, ipcMain, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, nativeTheme, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs/promises');
 
@@ -147,6 +147,24 @@ ipcMain.handle('pdf:renderer-ready', async () => {
     const file = pendingFile;
     pendingFile = null;
     await sendPdfToWindow(file);
+  }
+});
+
+// Save the currently displayed PDF to a user-chosen location.
+ipcMain.handle('pdf:save-as', async (_event, { bytes, suggestedName }) => {
+  if (!mainWindow) return { canceled: true };
+  const defaultPath = suggestedName || 'document.pdf';
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save PDF as',
+    defaultPath,
+    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  });
+  if (result.canceled || !result.filePath) return { canceled: true };
+  try {
+    await fs.writeFile(result.filePath, Buffer.from(bytes));
+    return { canceled: false, filePath: result.filePath };
+  } catch (err) {
+    return { canceled: false, error: String(err && err.message || err) };
   }
 });
 

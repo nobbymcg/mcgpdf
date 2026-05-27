@@ -58,4 +58,12 @@ contextBridge.exposeInMainWorld('mcgpdf', {
       }
     });
   },
+
+  /**
+   * Save the given PDF bytes to a user-chosen location. Resolves with
+   * { canceled, filePath?, error? }.
+   */
+  savePdf(bytes, suggestedName) {
+    return ipcRenderer.invoke('pdf:save-as', { bytes, suggestedName });
+  },
 });

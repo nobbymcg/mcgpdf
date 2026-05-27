@@ -74,6 +74,18 @@
   }
   body.dark #toolbar input[type="text"]::placeholder { color: #aaa; }
   body.dark #version-info { color: #bbb; }
+  body.dark #open-btn .btn-icon { filter: invert(1); }
+  body.dark #save-btn .btn-icon { filter: invert(1); }
+  body.dark .nav-btn .btn-icon { filter: invert(1); }
+
+  #open-btn,
+  #save-btn { display: inline-flex; align-items: center; justify-content: center; padding: 4px 8px; }
+  #open-btn .btn-icon,
+  #save-btn .btn-icon { width: 18px; height: 18px; display: block; }
+  .nav-btn { display: inline-flex; align-items: center; justify-content: center; padding: 4px 8px; min-width: 28px; height: 28px; box-sizing: border-box; }
+  .nav-btn .btn-icon { width: 18px; height: 18px; display: block; }
+  #search-box { height: 28px; box-sizing: border-box; padding: 0 8px; }
+  #find-next-btn { height: 28px; box-sizing: border-box; padding: 0 10px; display: inline-flex; align-items: center; justify-content: center; }
 
   #toolbar {
     padding: 10px;
@@ -173,13 +185,14 @@
 
 <div id="toolbar">
   <input type="file" id="file-input" accept="application/pdf" hidden>
-  <button type="button" onclick="document.getElementById('file-input').click()">Choose file</button>
-  <button onclick="prevPage()">Prev</button>
-  <button onclick="nextPage()">Next</button>
-  <button onclick="zoomIn()">Zoom +</button>
-  <button onclick="zoomOut()">Zoom -</button>
+  <button type="button" id="open-btn" title="Open PDF" aria-label="Open PDF" onclick="document.getElementById('file-input').click()"><img src="open.svg" alt="" class="btn-icon"></button>
+  <button type="button" id="save-btn" title="Save PDF as..." aria-label="Save PDF as" onclick="saveCurrent()"><img src="save.svg" alt="" class="btn-icon"></button>
+  <button type="button" class="nav-btn" title="Previous page" aria-label="Previous page" onclick="prevPage()"><img src="prev.svg" alt="" class="btn-icon"></button>
+  <button type="button" class="nav-btn" title="Next page" aria-label="Next page" onclick="nextPage()"><img src="next.svg" alt="" class="btn-icon"></button>
+  <button type="button" class="nav-btn" title="Zoom in" aria-label="Zoom in" onclick="zoomIn()"><img src="zoom-plus.svg" alt="" class="btn-icon"></button>
+  <button type="button" class="nav-btn" title="Zoom out" aria-label="Zoom out" onclick="zoomOut()"><img src="zoom-minus.svg" alt="" class="btn-icon"></button>
   <input type="text" id="search-box" placeholder="Search...">
-  <button onclick="searchText()">Find Next</button>
+  <button type="button" id="find-next-btn" onclick="searchText()">Find Next</button>
   <span id="page-info"></span>
   <span id="version-info"></span>
 </div>
@@ -256,6 +269,7 @@ document.getElementById('file-input').addEventListener('change', function(e) {
   if (!file) return;
 
   setDocumentName(file.name);
+  currentPdfName = file.name;
 
   const fileReader = new FileReader();
 
@@ -266,9 +280,16 @@ document.getElementById('file-input').addEventListener('change', function(e) {
   fileReader.readAsArrayBuffer(file);
 });
 
+// Track the currently loaded PDF so we can offer Save As.
+let currentPdfBytes = null;
+let currentPdfName = null;
+
 // Load PDF bytes (Uint8Array) into the viewer. Shared by the file-input path
 // and the Electron "open with" IPC path.
 function loadPdfBytes(typedarray) {
+  // pdf.js detaches the underlying ArrayBuffer when it consumes the bytes,
+  // so keep an independent copy for Save As.
+  currentPdfBytes = new Uint8Array(typedarray);
   pdfjsLib.getDocument(typedarray).promise.then(pdf => {
     pdfDoc = pdf;
     currentPage = 1;
@@ -277,11 +298,49 @@ function loadPdfBytes(typedarray) {
   }).catch(err => alert("Failed to open PDF: " + err.message));
 }
 
+// Save the currently loaded PDF to a user-chosen location. In Electron we
+// route through the main process so we can use the native save dialog and
+// write to disk; in a plain browser we fall back to a Blob download.
+async function saveCurrent() {
+  if (!currentPdfBytes) {
+    alert("No PDF is open.");
+    return;
+  }
+  const suggested = currentPdfName || "document.pdf";
+  if (window.mcgpdf && typeof window.mcgpdf.savePdf === 'function') {
+    try {
+      const res = await window.mcgpdf.savePdf(
+        currentPdfBytes.buffer.slice(
+          currentPdfBytes.byteOffset,
+          currentPdfBytes.byteOffset + currentPdfBytes.byteLength
+        ),
+        suggested
+      );
+      if (res && res.error) {
+        alert("Failed to save PDF: " + res.error);
+      }
+    } catch (err) {
+      alert("Failed to save PDF: " + (err && err.message || err));
+    }
+    return;
+  }
+  // Browser fallback.
+  const blob = new Blob([currentPdfBytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = suggested;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // When running under Electron, the preload script exposes window.mcgpdf and
 // pushes the file bytes when the user opens a PDF via Explorer / Open With.
 if (window.mcgpdf && typeof window.mcgpdf.onOpenPdf === 'function') {
   window.mcgpdf.onOpenPdf((bytes, name) => {
-    if (name) setDocumentName(name);
+    if (name) { setDocumentName(name); currentPdfName = name; }
     loadPdfBytes(new Uint8Array(bytes));
   });
   if (typeof window.mcgpdf.onError === 'function') {

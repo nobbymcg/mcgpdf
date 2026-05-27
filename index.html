@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Lightweight PDF Reader</title>
+<title>McGPDF Lightweight PDF Reader</title>
 
 <style>
   html, body {
@@ -17,12 +17,80 @@
     flex-direction: column;
   }
 
+  /* Custom title bar (window chrome is hidden in main.js; native min/max/close
+     buttons are still drawn on top via titleBarOverlay). */
+  #titlebar {
+    height: 32px;
+    flex: 0 0 auto;
+    background: #f0f0f0;
+    color: #222;
+    display: flex;
+    align-items: center;
+    font-size: 13px;
+    -webkit-app-region: drag;
+    user-select: none;
+    /* Reserve room on the right for the native window controls overlay. */
+    padding: 0 140px 0 8px;
+    box-sizing: border-box;
+    gap: 8px;
+  }
+
+  #titlebar-icon {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #titlebar-icon svg,
+  #titlebar-icon img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+  }
+
+  #titlebar-text {
+    flex: 1 1 auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: center;
+    /* Counter the 18px icon + 8px gap on the left so the title stays
+       optically centered relative to the full window width. */
+    padding-right: 26px;
+  }
+
+  /* Dark theme — toggled by adding 'dark' class to <body>. */
+  body.dark #titlebar { background: #202020; color: #f0f0f0; }
+  body.dark #toolbar  { background: #2b2b2b; color: #f0f0f0; }
+  body.dark #toolbar button,
+  body.dark #toolbar input[type="text"] {
+    background: #3a3a3a;
+    color: #f0f0f0;
+    border: 1px solid #555;
+  }
+  body.dark #toolbar input[type="text"]::placeholder { color: #aaa; }
+  body.dark #version-info { color: #bbb; }
+
   #toolbar {
     padding: 10px;
     background: #f0f0f0;
     display: flex;
+    align-items: center;
     gap: 10px;
     flex: 0 0 auto;
+    /* Toolbar must not be a drag region or its controls are inert. */
+    -webkit-app-region: no-drag;
+  }
+
+  #version-info {
+    margin-left: auto;
+    color: #555;
+    font-size: 12px;
+    font-family: Arial, sans-serif;
   }
 
   #viewer {
@@ -96,8 +164,16 @@
 
 <body>
 
+<div id="titlebar">
+  <div id="titlebar-icon" aria-hidden="true">
+    <img src="scotty.ico" alt="">
+  </div>
+  <span id="titlebar-text">McGPDF</span>
+</div>
+
 <div id="toolbar">
-  <input type="file" id="file-input">
+  <input type="file" id="file-input" accept="application/pdf" hidden>
+  <button type="button" onclick="document.getElementById('file-input').click()">Choose file</button>
   <button onclick="prevPage()">Prev</button>
   <button onclick="nextPage()">Next</button>
   <button onclick="zoomIn()">Zoom +</button>
@@ -105,6 +181,7 @@
   <input type="text" id="search-box" placeholder="Search...">
   <button onclick="searchText()">Find Next</button>
   <span id="page-info"></span>
+  <span id="version-info"></span>
 </div>
 
 <div id="viewer"></div>
@@ -127,6 +204,30 @@ let pageStates = [];
 let pageObserver = null;
 
 const viewer = document.getElementById('viewer');
+
+// Apply OS theme (dark/light) by toggling a class on <body>.
+function applyTheme(dark) {
+  document.body.classList.toggle('dark', !!dark);
+}
+if (window.mcgpdf) {
+  applyTheme(window.mcgpdf.initialTheme === 'dark');
+  if (typeof window.mcgpdf.onThemeChanged === 'function') {
+    window.mcgpdf.onThemeChanged(({ dark }) => applyTheme(dark));
+  }
+}
+
+// Update the centered filename in the custom title bar.
+function setDocumentName(name) {
+  const text = name || 'McGPDF';
+  document.getElementById('titlebar-text').textContent = text;
+  document.title = name ? name + ' \u2014 McGPDF' : 'McGPDF';
+}
+
+// Show app version at the right of the toolbar.
+if (window.mcgpdf && window.mcgpdf.appVersion) {
+  document.getElementById('version-info').textContent =
+    'v' + window.mcgpdf.appVersion;
+}
 
 // Resolve a PDF "destination" (named string or explicit array) to a 1-based
 // page number in the current document.
@@ -154,6 +255,8 @@ document.getElementById('file-input').addEventListener('change', function(e) {
   const file = e.target.files[0];
   if (!file) return;
 
+  setDocumentName(file.name);
+
   const fileReader = new FileReader();
 
   fileReader.onload = function() {
@@ -178,7 +281,7 @@ function loadPdfBytes(typedarray) {
 // pushes the file bytes when the user opens a PDF via Explorer / Open With.
 if (window.mcgpdf && typeof window.mcgpdf.onOpenPdf === 'function') {
   window.mcgpdf.onOpenPdf((bytes, name) => {
-    if (name) document.title = name + " — McGPDF";
+    if (name) setDocumentName(name);
     loadPdfBytes(new Uint8Array(bytes));
   });
   if (typeof window.mcgpdf.onError === 'function') {

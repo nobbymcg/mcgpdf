@@ -1,6 +1,6 @@
 {
   "name": "mcgpdf",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "Lightweight PDF reader (Electron build of McGPDF)",
   "main": "main.js",
   "scripts": {
@@ -24,6 +24,7 @@
       "main.js",
       "preload.js",
       "index.html",
+      "scotty.ico",
       "package.json"
     ],
     "fileAssociations": [
@@ -35,6 +36,7 @@
       }
     ],
     "win": {
+      "icon": "scotty.ico",
       "target": [
         { "target": "nsis", "arch": ["x64"] }
       ]

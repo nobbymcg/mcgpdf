@@ -5,7 +5,30 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Version is injected by main via webPreferences.additionalArguments
+// (require('./package.json') is not allowed in a sandboxed preload).
+const versionArg = process.argv.find(a => a.startsWith('--app-version='));
+const appVersion = versionArg ? versionArg.slice('--app-version='.length) : '';
+
+const themeArg = process.argv.find(a => a.startsWith('--initial-theme='));
+const initialTheme = themeArg ? themeArg.slice('--initial-theme='.length) : 'light';
+
 contextBridge.exposeInMainWorld('mcgpdf', {
+  /** App version, injected from the main process at window creation. */
+  appVersion,
+
+  /** 'dark' or 'light', captured at window creation. */
+  initialTheme,
+
+  /** Subscribe to OS theme changes. callback({ dark: boolean }) */
+  onThemeChanged(callback) {
+    ipcRenderer.on('theme:changed', (_event, payload) => {
+      try { callback(payload); } catch (err) {
+        console.error('mcgpdf onThemeChanged handler threw:', err);
+      }
+    });
+  },
+
   /**
    * Subscribe to "open PDF" events pushed by the main process. The callback
    * is invoked with (bytes: ArrayBuffer, fileName: string).

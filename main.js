@@ -9,7 +9,7 @@
 //     opening another PDF from Explorer swaps the document instead of
 //     spawning a new window)
 
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs/promises');
 
@@ -68,16 +68,24 @@ app.on('activate', () => {
 // Window
 // ---------------------------------------------------------------------------
 function createWindow() {
+  const dark = nativeTheme.shouldUseDarkColors;
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 850,
     backgroundColor: '#525659',
     title: 'McGPDF',
+    icon: path.join(__dirname, 'scotty.ico'),
+    titleBarStyle: 'hidden',
+    titleBarOverlay: titleBarOverlayColors(dark),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      additionalArguments: [
+        `--app-version=${app.getVersion()}`,
+        `--initial-theme=${dark ? 'dark' : 'light'}`,
+      ],
     },
   });
 
@@ -86,10 +94,50 @@ function createWindow() {
 
   mainWindow.loadFile('index.html');
 
+  // Route any link the renderer tries to open in a new window (e.g. PDF
+  // hyperlinks with target="_blank") to the user's default external browser
+  // instead of opening it inside an Electron window.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url) || /^mailto:/i.test(url)) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
+  // Also catch top-level navigations (middle-click / programmatic) to http(s)
+  // URLs and hand them off to the OS browser; keep the viewer on index.html.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const current = mainWindow.webContents.getURL();
+    if (url !== current && /^(https?|mailto):/i.test(url)) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 }
+
+// Colors used for the native window-controls overlay (min/max/close strip)
+// to match the current system theme.
+function titleBarOverlayColors(dark) {
+  return dark
+    ? { color: '#202020', symbolColor: '#ffffff', height: 32 }
+    : { color: '#f0f0f0', symbolColor: '#000000', height: 32 };
+}
+
+// Sync native overlay + notify renderer whenever the OS theme flips.
+nativeTheme.on('updated', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const dark = nativeTheme.shouldUseDarkColors;
+  try {
+    mainWindow.setTitleBarOverlay(titleBarOverlayColors(dark));
+  } catch {
+    // setTitleBarOverlay is Windows-only; ignore on other platforms.
+  }
+  mainWindow.webContents.send('theme:changed', { dark });
+});
 
 // ---------------------------------------------------------------------------
 // IPC: renderer tells us it's ready; we then push any queued file.

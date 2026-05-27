@@ -1,6 +1,6 @@
 {
   "name": "mcgpdf",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Lightweight PDF reader (Electron build of McGPDF)",
   "main": "main.js",
   "scripts": {
@@ -15,7 +15,8 @@
   "license": "MIT",
   "devDependencies": {
     "electron": "^42.2.0",
-    "electron-builder": "^26.8.1"
+    "electron-builder": "^26.8.1",
+    "pdfjs-dist": "^3.11.174"
   },
   "build": {
     "appId": "com.mcguire.mcgpdf",
@@ -26,6 +27,7 @@
       "index.html",
       "scotty.ico",
       "*.svg",
+      "vendor/**",
       "package.json"
     ],
     "fileAssociations": [
@@ -39,7 +41,12 @@
     "win": {
       "icon": "scotty.ico",
       "target": [
-        { "target": "nsis", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "nsis": {
@@ -51,8 +58,20 @@
     },
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["x64", "arm64"] },
-        { "target": "zip", "arch": ["x64", "arm64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "category": "public.app-category.productivity",
       "hardenedRuntime": true,

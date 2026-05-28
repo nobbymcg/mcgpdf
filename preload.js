@@ -20,6 +20,9 @@ contextBridge.exposeInMainWorld('mcgpdf', {
   /** 'dark' or 'light', captured at window creation. */
   initialTheme,
 
+  /** Host platform: 'darwin' | 'win32' | 'linux' | ... */
+  platform: process.platform,
+
   /** Subscribe to OS theme changes. callback({ dark: boolean }) */
   onThemeChanged(callback) {
     ipcRenderer.on('theme:changed', (_event, payload) => {

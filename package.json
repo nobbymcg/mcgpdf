@@ -1,6 +1,6 @@
 {
   "name": "mcgpdf",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Lightweight PDF reader (Electron build of McGPDF)",
   "main": "main.js",
   "scripts": {
